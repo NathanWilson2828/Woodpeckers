@@ -94,7 +94,7 @@ woodpecker_abbr <- c(
   "ALLW"                   = "ALLWP")
 ```
 
-## 5.75 Calls Per Woodpecker Species 
+## 5.75 Total Woodpecker Calls per Species 
 ```{r}
 # 1) Tally & plot in one chain
 Birds2 %>%
@@ -102,12 +102,13 @@ Birds2 %>%
   count(Species, wt = Count, name = "total_calls") %>%
   mutate(Species = recode(Species, !!!woodpecker_abbr)) %>%
   ggplot(aes(x = Species, y = total_calls)) +
-    geom_col(fill = "black", width = 0.7) +
+    geom_col(fill = "darkgrey", width = 0.9) +
     theme_minimal() +
+    labs(title = "Total woodpecker calls per species") +
     theme(
       axis.title    = element_blank(),
       axis.text.x   = element_text(angle = 45, hjust = 1, size = 14),
-      plot.title    = element_blank())
+      plot.title    = element_text(size = 16, face = "bold", hjust = 0.5))
 ```
 
 # 6. Organizing for Kruskal–Wallis and Dunn’s Tests by Condition
@@ -402,6 +403,83 @@ plot_cond_group <- function(sp) {
 walk(plot_groups, plot_cond_group)
 ```
 
+## 13.5 Condition Graphs with Error Bars part 2
+```{r}
+# 1) Compute mean ± SE for each Condition × Species (woodpeckers only)
+summary_stats <- Birds2_conditions %>%
+  filter(Species %in% woodpeckers) %>%
+  group_by(Condition, Species) %>%
+  summarise(
+    mean_calls = mean(Count),
+    se         = sd(Count) / sqrt(n()),
+    .groups    = "drop"
+  )
+
+# 2) Precompute the max bar height per species (for bracket placement)
+y_max_df <- summary_stats %>%
+  group_by(Species) %>%
+  summarise(y_max = max(mean_calls + se), .groups = "drop")
+
+# 3) Which Conditions are your “treatments”?
+treatments <- names(conditions)
+
+# 4) Build a table of *significant* (p < .05) Dunn comparisons vs each baseline
+stat_table <- dunn_results_condition %>%
+  filter(Species %in% woodpeckers) %>%
+  separate(Comparison, into = c("group1","group2"), sep = " - ") %>%
+  filter(
+    group1 %in% treatments,
+    group2 %in% c("Week1", "Weeks15_17"),
+    Dunn_p_adj < 0.05
+  ) %>%
+  left_join(y_max_df, by = "Species") %>%
+  mutate(y.position = y_max + 5)  # bump bracket 5 units above tallest bar
+
+# 5) Loop over each treatment and plot
+for (cond in treatments) {
+  df_plot <- summary_stats %>%
+    filter(Condition %in% c(cond, "Week1", "Weeks15_17")) %>%
+    mutate(
+  Condition = recode(Condition,
+    "Week1"      = "Early Control",
+    "Weeks15_17" = "Late Controls"),
+  Condition = factor(Condition, levels = c(cond, "Early Control", "Late Control")))
+  
+  sigs <- stat_table %>% filter(group1 == cond)
+  
+  p <- ggplot(df_plot, aes(x = Species, y = mean_calls, fill = Condition)) +
+    geom_col(position = position_dodge(0.8), width = 0.7) +
+    geom_errorbar(aes(ymin = mean_calls - se, ymax = mean_calls + se),
+                  position = position_dodge(0.8), width = 0.2)
+  
+  # only add brackets if there *are* significant comparisons
+  if (nrow(sigs) > 0) {
+    p <- p + stat_pvalue_manual(
+      sigs,
+      label      = "Dunn_p_adj",
+      x          = "Species",
+      y.position = "y.position",
+      tip.length = 0.01
+    )
+  }
+  
+  p + scale_x_discrete(labels = function(x) woodpecker_abbr[x]) +
+    labs(fill = NULL, title = cond) +
+    theme_minimal() +
+    theme(
+      axis.title.x    = element_blank(),
+      axis.title.y    = element_blank(),
+      axis.text.x     = element_text(angle = 45, hjust = 1, size = 14),
+      legend.position = "bottom"
+    ) -> plot_obj
+  
+  print(plot_obj)
+}
+```
+
+
+
+
 ## 14. Weekly Woodpecker Graphs with Error Bars & Significance
 ```{r}
 # Define control weeks
@@ -578,7 +656,6 @@ walk(woodpeckers, plot_weekly_species)
 
 ## 17. Weather + Woodpecker Calls, Daily Summaries
 ```{r}
-
 # 1) Read & summarise weather for May–Aug
 weather_files <- c(
   "Tuscaloosa.2024-05-01---2024-05-31.csv",
@@ -616,6 +693,7 @@ df_wp <- df_wp %>%
   arrange(local.date)
 ```
 
+## 18. Weather Graph 
 ```{r}
 # compute weekly summaries for woodpecker calls
 weekly_wp <- df_wp %>%
@@ -640,29 +718,151 @@ sf_wp_precip <- max(weekly_wp$avg_wp_calls, na.rm=TRUE) /
                 max(weekly_wp$avg_precip,     na.rm=TRUE)
 
 ggplot(weekly_wp, aes(x = Week)) +
-  geom_col(aes(y = avg_wp_calls), fill = "steelblue") +
-  geom_line(aes(y = avg_max_temp * sf_wp_temp),
-            color = "firebrick", size = 1) +
-  geom_line(aes(y = avg_precip   * sf_wp_precip),
-            color = "darkgreen", size = 1, linetype = "dashed") +
+  geom_col(aes(y = avg_wp_calls, fill = "Woodpecker calls"), width = 0.8) +
+  geom_line(aes(y = avg_max_temp * sf_wp_temp, color = "Max temp"), size = 1) +
+  geom_line(aes(y = avg_precip   * sf_wp_precip, color = "Precipitation"),
+            size = 1, linetype = "dashed") +
   scale_x_continuous(breaks = 1:17) +
   scale_y_continuous(
     name     = "Avg woodpecker calls per day",
-    sec.axis = sec_axis(
-      ~ . / sf_wp_temp,
-      name = "Avg max temp (°F)"   
-    )
+    sec.axis = sec_axis(~ . / sf_wp_temp,
+                        name = "Avg max temp (°F)")
   ) +
+  scale_fill_manual(values = c("Woodpecker calls" = "steelblue")) +
+  scale_color_manual(values = c("Max temp" = "firebrick", "Precipitation" = "darkgreen")) +
   labs(
-    title = NULL,  # no title
-    x     = NULL   # no x‑axis label
+    x     = "Weeks",
+    color = NULL,
+    fill  = NULL
   ) +
   theme_minimal() +
   theme(
-    axis.title.x = element_blank(),     # just to be sure
-    plot.title   = element_blank()      # in case you had set one earlier
-  )
+    plot.title   = element_blank(),
+    axis.title.x = element_text(size = 14),
+    legend.position = "bottom",
+    legend.text     = element_text(size = 12))
 ```
+
+## 19. URCA Graph with Averages. 
+```{r}
+## 6. Average woodpecker calls per day by condition
+# ── 1. Mark experimental conditions ───────────────────────────────────────────
+Birds2 <- Birds2 %>%
+  mutate(
+    Condition = case_when(
+      Week %in% controls$Week1 ~ "Early Control",
+      Week %in% controls$Weeks15_17 ~ "Late Control",
+      Week %in% as.character(conditions$Food) ~ "Food Only",
+      Week %in% as.character(conditions$Decoy) ~ "Decoy Only",
+      Week %in% as.character(conditions$FoodDecoy) ~ "Food and Decoy",
+      Week %in% as.character(conditions$Playback) ~ "Playback",
+      TRUE ~ "Other"
+    )
+  )
+
+# ── 2. Summarise average calls ────────────────────────────────────────────────
+Birds_Woodpeckers_Average <- Birds2 %>%
+  filter(Species %in% woodpeckers, Condition != "Other") %>%
+  group_by(Condition, Week) %>%
+  summarise(Average_Calls = mean(Count, na.rm = TRUE), .groups = "drop") %>%
+  group_by(Condition) %>%
+  summarise(Average_Calls = mean(Average_Calls, na.rm = TRUE), .groups = "drop")
+
+# ── 3. Order conditions ──────────────────────────────────────────────────────
+condition_order <- c("Early Control", "Food Only", "Decoy Only",
+                     "Food and Decoy", "Playback", "Late Control")
+
+Birds_Woodpeckers_Average <- Birds_Woodpeckers_Average %>%
+  mutate(Condition = factor(Condition, levels = condition_order))
+
+# ── 4. Colors ────────────────────────────────────────────────────────────────
+custom_colors <- c(
+  "Early Control" = "#00A600",   # green
+  "Food Only"     = "#63C600",   # lighter green
+  "Decoy Only"    = "#E6E600",   # yellow
+  "Food and Decoy"= "#EAB64E",   # orange
+  "Playback"      = "#EEB99F",   # pink
+  "Late Control"  = "#00A600"    # same green as Early Control
+)
+
+# ── 5. Plot ───────────────────────────────────────────────────────────────────
+ggplot(Birds_Woodpeckers_Average,
+       aes(x = Condition, y = Average_Calls, fill = Condition)) +
+  geom_bar(stat = "identity", color = "black", width = 0.75) +
+  labs(
+    title = " ",
+    y     = "Average calls per day"
+  ) +
+  theme_minimal() +
+  theme(
+    axis.text.x      = element_text(size = 9, angle = 45, hjust = 1),
+    panel.grid.major = element_blank(),
+    panel.grid.minor = element_blank(),
+    panel.background = element_blank(),
+    axis.line.x      = element_line(color = "black"),
+    axis.line.y      = element_line(color = "black"),
+    axis.title.x     = element_blank(),
+    legend.position  = "none"
+  ) +
+  scale_fill_manual(values = custom_colors) +
+  scale_y_continuous(expand = c(0, 0)) +
+  coord_cartesian(ylim = c(0, NA))
+```
+
+## 20. Big URCA Graph with Colors. 
+```{r}
+# ── 1. Summarise ──────────────────────────────────────────────────────────────
+Birds_line <- Birds2 %>%
+  filter(Species %in% woodpeckers, Week != "No Week") %>%
+  group_by(Species, Week) %>%
+  summarise(Average_Calls_Per_Day = mean(Count, na.rm = TRUE), .groups = "drop") %>%
+  mutate(Week = factor(Week, levels = as.character(1:17)))
+
+# ── 2. Plot ───────────────────────────────────────────────────────────────────
+ggplot(Birds_line,
+       aes(x = Week, y = Average_Calls_Per_Day,
+           color = Species, shape = Species, group = Species)) +
+  # Background rectangles for conditions (using custom colors)
+  geom_rect(aes(xmin = 0.5, xmax = 2, ymin = -Inf, ymax = Inf),
+            fill = custom_colors["Early Control"], alpha = 0.25, inherit.aes = FALSE) +
+  geom_rect(aes(xmin = 2, xmax = 6, ymin = -Inf, ymax = Inf),
+            fill = custom_colors["Food Only"], alpha = 0.25, inherit.aes = FALSE) +
+  geom_rect(aes(xmin = 6, xmax = 9, ymin = -Inf, ymax = Inf),
+            fill = custom_colors["Decoy Only"], alpha = 0.25, inherit.aes = FALSE) +
+  geom_rect(aes(xmin = 9, xmax = 11, ymin = -Inf, ymax = Inf),
+            fill = custom_colors["Food and Decoy"], alpha = 0.25, inherit.aes = FALSE) +
+  geom_rect(aes(xmin = 11, xmax = 15, ymin = -Inf, ymax = Inf),
+            fill = custom_colors["Playback"], alpha = 0.25, inherit.aes = FALSE) +
+  geom_rect(aes(xmin = 15, xmax = 17.5, ymin = -Inf, ymax = Inf),
+            fill = custom_colors["Late Control"], alpha = 0.25, inherit.aes = FALSE) +
+  # Lines + points
+  geom_line(size = 1) +
+  geom_point(size = 3) +
+  labs(
+    x = "Week",
+    y = "Average calls per day",
+    title = "Average woodpecker calls per week"
+  ) +
+  theme_minimal() +
+  theme(
+    axis.text.x     = element_text(size = 12),
+    axis.text.y     = element_text(size = 12),
+    legend.title    = element_blank(),
+    panel.grid.major= element_line(color = "white"),
+    panel.grid.minor= element_blank(),
+    legend.position = "bottom",
+    legend.margin   = margin(-10, 0, 0, 0)
+  ) +
+  scale_color_grey(start = 0, end = 0.8,
+                   guide = guide_legend(nrow = 3, byrow = TRUE)) +
+  scale_shape_manual(values = c(16, 17, 18, 15, 8, 3)) +
+  coord_fixed(ratio = 0.4)
+```
+
+
+
+
+
 
 
 
